@@ -1,0 +1,3 @@
+gifticker API running at http://localhost:3001
+
+C:\Users\bibek\Documents\Projects\gifticker\backend>
