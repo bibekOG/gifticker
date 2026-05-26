@@ -3,6 +3,16 @@ import fs from "node:fs/promises";
 import { v4 as uuid } from "uuid";
 import { config } from "../config/index.js";
 
+const ALLOWED_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".webp",
+  ".mp4", ".mov", ".webm", ".avi",
+]);
+
+function safeExtension(originalName: string): string {
+  const ext = path.extname(originalName).toLowerCase();
+  return ALLOWED_EXTENSIONS.has(ext) ? ext : ".bin";
+}
+
 export interface UploadedFile {
   id: string;
   originalName: string;
@@ -16,7 +26,7 @@ export async function saveFile(
   file: Express.Multer.File
 ): Promise<UploadedFile> {
   const id = uuid();
-  const ext = path.extname(file.originalname);
+  const ext = safeExtension(file.originalname);
   const fileName = `${id}${ext}`;
   const destDir = config.uploadDir;
 

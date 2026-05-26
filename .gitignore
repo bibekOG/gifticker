@@ -42,4 +42,3 @@ coverage/
 
 # OpenCode secrets
 .opencode/secrets/
-opencode.json

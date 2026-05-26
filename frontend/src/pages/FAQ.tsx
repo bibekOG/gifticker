@@ -29,11 +29,14 @@ export default function FAQ() {
   const [openIdx, setOpenIdx] = useState<number | null>(0);
   const [newsletterEmail, setNewsletterEmail] = useState("");
 
-  const handleNewsletterSubmit = (e: FormEvent) => {
+  const handleNewsletterSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (newsletterEmail) {
-      subscribeNewsletter(newsletterEmail);
+    if (!newsletterEmail) return;
+    try {
+      await subscribeNewsletter(newsletterEmail);
       setNewsletterEmail("");
+    } catch {
+      // Newsletter subscription is best-effort; no user-facing error needed
     }
   };
 

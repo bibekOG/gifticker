@@ -11,7 +11,9 @@ export interface ExportOptions {
   quality: number;
 }
 
-function renderFrame(
+const CHROMA_KEY = "#ff00ff";
+
+function drawContent(
   ctx: CanvasRenderingContext2D,
   imageSource: CanvasImageSource,
   cropRect: { x: number; y: number; width: number; height: number } | undefined,
@@ -20,9 +22,7 @@ function renderFrame(
   outputHeight: number,
   scale: number,
   rotate: number
-): ImageData {
-  ctx.clearRect(0, 0, outputWidth, outputHeight);
-
+): void {
   ctx.save();
   ctx.translate(outputWidth / 2, outputHeight / 2);
   ctx.scale(scale, scale);
@@ -55,7 +55,35 @@ function renderFrame(
     ctx.fillStyle = "#ffffff";
     ctx.fillText(text, outputWidth / 2, outputHeight / 2);
   }
+}
 
+function renderFrameWithAlpha(
+  ctx: CanvasRenderingContext2D,
+  imageSource: CanvasImageSource,
+  cropRect: { x: number; y: number; width: number; height: number } | undefined,
+  text: string,
+  outputWidth: number,
+  outputHeight: number,
+  scale: number,
+  rotate: number
+): void {
+  ctx.clearRect(0, 0, outputWidth, outputHeight);
+  drawContent(ctx, imageSource, cropRect, text, outputWidth, outputHeight, scale, rotate);
+}
+
+function renderFrameWithKey(
+  ctx: CanvasRenderingContext2D,
+  imageSource: CanvasImageSource,
+  cropRect: { x: number; y: number; width: number; height: number } | undefined,
+  text: string,
+  outputWidth: number,
+  outputHeight: number,
+  scale: number,
+  rotate: number
+): ImageData {
+  ctx.fillStyle = CHROMA_KEY;
+  ctx.fillRect(0, 0, outputWidth, outputHeight);
+  drawContent(ctx, imageSource, cropRect, text, outputWidth, outputHeight, scale, rotate);
   return ctx.getImageData(0, 0, outputWidth, outputHeight);
 }
 
@@ -79,8 +107,8 @@ export async function exportAsGif(options: ExportOptions): Promise<Blob> {
     height: outputHeight,
     quality: Math.max(1, Math.min(20, Math.round(20 - quality * 0.18))),
     repeat: 0,
-    background: "#00000000",
-    transparent: null,
+    background: CHROMA_KEY,
+    transparent: CHROMA_KEY,
   });
 
   return new Promise<Blob>((resolve, reject) => {
@@ -89,6 +117,7 @@ export async function exportAsGif(options: ExportOptions): Promise<Blob> {
       resolve(blob);
     });
 
+    // @ts-expect-error - gif.js 0.2.0 emits "error" but types exclude it
     gif.on("error", reject);
 
     for (let i = 0; i < frameCount; i++) {
@@ -96,7 +125,7 @@ export async function exportAsGif(options: ExportOptions): Promise<Blob> {
       const scale = 1 + 0.02 * Math.sin(t * Math.PI * 2);
       const rotate = 0.5 * Math.sin(t * Math.PI * 2);
 
-      const frameData = renderFrame(ctx, imageSource, cropRect, text, outputWidth, outputHeight, scale, rotate);
+      const frameData = renderFrameWithKey(ctx, imageSource, cropRect, text, outputWidth, outputHeight, scale, rotate);
       gif.addFrame(frameData, { delay, copy: true });
     }
 
@@ -104,18 +133,40 @@ export async function exportAsGif(options: ExportOptions): Promise<Blob> {
   });
 }
 
+export async function exportAsWebp(options: ExportOptions): Promise<Blob> {
+  const {
+    imageSource, cropRect, text,
+    outputWidth, outputHeight,
+  } = options;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = outputWidth;
+  canvas.height = outputHeight;
+  const ctx = canvas.getContext("2d")!;
+
+  renderFrameWithAlpha(ctx, imageSource, cropRect, text, outputWidth, outputHeight, 1, 0);
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      canvas.remove();
+      if (blob) resolve(blob);
+      else reject(new Error("WebP encoding failed"));
+    }, "image/webp", 0.95);
+  });
+}
+
 export async function exportAsSticker(options: ExportOptions): Promise<Blob> {
-  return exportAsGif(options);
+  return exportAsWebp(options);
 }
 
 export async function copyBlobToClipboard(blob: Blob): Promise<void> {
+  if (!navigator.clipboard) return;
+
   try {
-    await navigator.clipboard.write([
-      new ClipboardItem({ [blob.type]: blob }),
-    ]);
-  } catch {
-    const item = new ClipboardItem({ "image/png": blob });
+    const item = new ClipboardItem({ [blob.type]: blob });
     await navigator.clipboard.write([item]);
+  } catch {
+    // Clipboard write is best-effort; user can always download
   }
 }
 

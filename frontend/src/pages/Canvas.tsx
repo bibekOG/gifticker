@@ -71,7 +71,7 @@ export default function Canvas() {
   const [isTextOpen, setIsTextOpen] = useState(false);
 
   // Dynamic Aspect Ratio state
-  const [aspectRatio, setAspectRatio] = useState<number>(1);
+  const [_aspectRatio, setAspectRatio] = useState<number>(1);
 
   useEffect(() => {
     if (imageSrc) {
@@ -134,7 +134,7 @@ export default function Canvas() {
     }
   };
 
-  const thumbImages = [imageSrc];
+  const thumbImages = imageSrc ? [imageSrc] : [];
 
   const handleCropToggle = () => {
     if (isCropMode) {
@@ -175,7 +175,8 @@ export default function Canvas() {
         duration: 2,
         quality: 10,
       });
-      const filename = `gifticker_${Date.now()}.${type === "gif" ? "gif" : "gif"}`;
+      const ext = type === "gif" ? "gif" : "webp";
+      const filename = `gifticker_${Date.now()}.${ext}`;
       downloadBlob(blob, filename);
       await copyBlobToClipboard(blob);
     } catch (e) {
@@ -362,7 +363,7 @@ export default function Canvas() {
                       )}
                       <div>
                         <p className="text-[13px] font-bold font-sans text-on-surface">Export & Copy as Sticker</p>
-                        <p className="text-[11px] text-on-surface-variant">Animated WebP format</p>
+                        <p className="text-[11px] text-on-surface-variant">WebP with transparency</p>
                       </div>
                     </button>
                   </motion.div>

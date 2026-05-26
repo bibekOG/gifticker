@@ -24,7 +24,7 @@ export interface OptimizationResult {
 export function estimateSize(
   width: number,
   height: number,
-  fps: number,
+  _fps: number,
   frameCount: number,
   colors: number
 ): number {
