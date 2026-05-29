@@ -15,13 +15,41 @@ import {
   Download,
   ShieldCheck,
   LoaderCircle,
+  Undo2,
+  Redo2,
+  X,
 } from "lucide-react";
 import Navbar from "../components/Navbar";
 import CropOverlay from "../components/CropOverlay";
-import { initialCropRect } from "../utils/cropUtils";
+import { initialCropRect, idealCropRect } from "../utils/cropUtils";
 import type { CropRect } from "../utils/cropUtils";
 import { PLATFORMS, estimateSize } from "../utils/platformLimits";
 import { exportAsGif, exportAsSticker, copyBlobToClipboard, downloadBlob } from "../utils/exportImage";
+
+interface CanvasState {
+  imageSrc: string;
+  mediaType: "video" | "image";
+  mediaName: string;
+  mediaSize: string;
+  cropRect: CropRect | null;
+  isCropMode: boolean;
+  text: string;
+  textPos: { x: number; y: number };
+}
+
+interface MediaTrack {
+  id: string;
+  imageSrc: string;
+  mediaType: "video" | "image";
+  mediaName: string;
+  mediaSize: string;
+  naturalWidth: number;
+  naturalHeight: number;
+  cropRect: CropRect | null;
+  isCropMode: boolean;
+  text: string;
+  textPos: { x: number; y: number };
+}
 
 interface LocationState {
   imageSrc?: string;
@@ -63,15 +91,209 @@ export default function Canvas() {
   const [isExporting, setIsExporting] = useState(false);
   
   // Custom Sizing & Fit State variables
-  const [zoom, setZoom] = useState<number>(1);
-  const [objectFit, setObjectFit] = useState<"contain" | "cover">("cover");
+  const [viewMode, setViewMode] = useState<"fit" | "actual">("fit");
 
   // Custom Editable Text State variables
   const [text, setText] = useState<string>("");
   const [isTextOpen, setIsTextOpen] = useState(false);
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [textPos, setTextPos] = useState({ x: 50, y: 50 }); // % from top-left
+  const textRef = useRef<HTMLDivElement>(null);
+  const dragState = useRef({ active: false, startX: 0, startY: 0, initX: 50, initY: 50 });
 
   // Dynamic Aspect Ratio state
-  const [_aspectRatio, setAspectRatio] = useState<number>(1);
+  const [naturalWidth, setNaturalWidth] = useState<number>(0);
+  const [naturalHeight, setNaturalHeight] = useState<number>(0);
+  const _aspectRatio = naturalWidth && naturalHeight ? naturalWidth / naturalHeight : 1;
+  const shouldAutoCrop = useRef(false);
+
+  // Multi-track asset management
+  const [tracks, setTracks] = useState<MediaTrack[]>([]);
+  const [activeTrackId, setActiveTrackId] = useState<string>("");
+
+  // Initialize tracks with default pug image once dimensions load
+  const hasInitializedTracks = useRef(false);
+  useEffect(() => {
+    if (naturalWidth > 0 && !hasInitializedTracks.current) {
+      hasInitializedTracks.current = true;
+      const initialId = "default-pug";
+      const defaultTrack: MediaTrack = {
+        id: initialId,
+        imageSrc,
+        mediaType,
+        mediaName,
+        mediaSize,
+        naturalWidth,
+        naturalHeight,
+        cropRect,
+        isCropMode,
+        text,
+        textPos,
+      };
+      setTracks([defaultTrack]);
+      setActiveTrackId(initialId);
+    }
+  }, [naturalWidth]);
+
+  // Synchronize active states to active track in tracks list
+  useEffect(() => {
+    if (!activeTrackId) return;
+    setTracks((prevTracks) => {
+      const currentTrack = prevTracks.find((t) => t.id === activeTrackId);
+      if (currentTrack && currentTrack.imageSrc !== imageSrc && currentTrack.imageSrc !== "") {
+        return prevTracks;
+      }
+      return prevTracks.map((t) =>
+        t.id === activeTrackId
+          ? {
+              ...t,
+              imageSrc,
+              mediaType,
+              mediaName,
+              mediaSize,
+              naturalWidth,
+              naturalHeight,
+              cropRect,
+              isCropMode,
+              text,
+              textPos,
+            }
+          : t
+      );
+    });
+  }, [imageSrc, mediaType, mediaName, mediaSize, naturalWidth, naturalHeight, cropRect, isCropMode, text, textPos, activeTrackId]);
+
+  const handleSelectTrack = (track: MediaTrack) => {
+    setActiveTrackId(track.id);
+    
+    setImageSrc(track.imageSrc);
+    setMediaType(track.mediaType);
+    setMediaName(track.mediaName);
+    setMediaSize(track.mediaSize);
+    setCropRect(track.cropRect);
+    setIsCropMode(track.isCropMode);
+    setText(track.text);
+    setTextPos(track.textPos);
+    setNaturalWidth(track.naturalWidth);
+    setNaturalHeight(track.naturalHeight);
+    
+    pushToHistory({
+      imageSrc: track.imageSrc,
+      mediaType: track.mediaType,
+      mediaName: track.mediaName,
+      mediaSize: track.mediaSize,
+      cropRect: track.cropRect,
+      isCropMode: track.isCropMode,
+      text: track.text,
+      textPos: track.textPos,
+    });
+  };
+
+  const handleDeleteTrack = (e: React.MouseEvent, trackId: string) => {
+    e.stopPropagation();
+    if (tracks.length <= 1) return;
+    
+    const indexToDelete = tracks.findIndex((t) => t.id === trackId);
+    const newTracks = tracks.filter((t) => t.id !== trackId);
+    setTracks(newTracks);
+    
+    if (activeTrackId === trackId) {
+      const nextActiveIndex = indexToDelete > 0 ? indexToDelete - 1 : 0;
+      const nextActiveTrack = newTracks[nextActiveIndex];
+      if (nextActiveTrack) {
+        handleSelectTrack(nextActiveTrack);
+      }
+    }
+  };
+
+  // State History tracking (Undo/Redo)
+  const [history, setHistory] = useState<CanvasState[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const hasInitializedHistory = useRef(false);
+
+  const pushToHistory = (nextState: Partial<CanvasState>) => {
+    setHistory((prevHistory) => {
+      const currentIndex = historyIndex;
+      const newHistory = prevHistory.slice(0, currentIndex + 1);
+      
+      const currentState = newHistory[currentIndex] || {
+        imageSrc,
+        mediaType,
+        mediaName,
+        mediaSize,
+        cropRect,
+        isCropMode,
+        text,
+        textPos,
+      };
+
+      const pushedState: CanvasState = {
+        imageSrc: nextState.imageSrc !== undefined ? nextState.imageSrc : currentState.imageSrc,
+        mediaType: nextState.mediaType !== undefined ? nextState.mediaType : currentState.mediaType,
+        mediaName: nextState.mediaName !== undefined ? nextState.mediaName : currentState.mediaName,
+        mediaSize: nextState.mediaSize !== undefined ? nextState.mediaSize : currentState.mediaSize,
+        cropRect: nextState.cropRect !== undefined ? nextState.cropRect : currentState.cropRect,
+        isCropMode: nextState.isCropMode !== undefined ? nextState.isCropMode : currentState.isCropMode,
+        text: nextState.text !== undefined ? nextState.text : currentState.text,
+        textPos: nextState.textPos !== undefined ? nextState.textPos : currentState.textPos,
+      };
+
+      setHistoryIndex(newHistory.length);
+      return [...newHistory, pushedState];
+    });
+  };
+
+  const handleUndo = () => {
+    if (historyIndex > 0) {
+      const prevIndex = historyIndex - 1;
+      const state = history[prevIndex];
+      setHistoryIndex(prevIndex);
+
+      setImageSrc(state.imageSrc);
+      setMediaType(state.mediaType);
+      setMediaName(state.mediaName);
+      setMediaSize(state.mediaSize);
+      setCropRect(state.cropRect);
+      setIsCropMode(state.isCropMode);
+      setText(state.text);
+      setTextPos(state.textPos);
+    }
+  };
+
+  const handleRedo = () => {
+    if (historyIndex < history.length - 1) {
+      const nextIndex = historyIndex + 1;
+      const state = history[nextIndex];
+      setHistoryIndex(nextIndex);
+
+      setImageSrc(state.imageSrc);
+      setMediaType(state.mediaType);
+      setMediaName(state.mediaName);
+      setMediaSize(state.mediaSize);
+      setCropRect(state.cropRect);
+      setIsCropMode(state.isCropMode);
+      setText(state.text);
+      setTextPos(state.textPos);
+    }
+  };
+
+  useEffect(() => {
+    if (naturalWidth > 0 && !hasInitializedHistory.current) {
+      hasInitializedHistory.current = true;
+      const initialState: CanvasState = {
+        imageSrc,
+        mediaType,
+        mediaName,
+        mediaSize,
+        cropRect,
+        isCropMode,
+        text,
+        textPos,
+      };
+      setHistory([initialState]);
+      setHistoryIndex(0);
+    }
+  }, [naturalWidth]);
 
   useEffect(() => {
     if (imageSrc) {
@@ -79,19 +301,68 @@ export default function Canvas() {
         const img = new Image();
         img.src = imageSrc;
         img.onload = () => {
-          setAspectRatio(img.naturalWidth / img.naturalHeight || 1);
+          const w = img.naturalWidth;
+          const h = img.naturalHeight;
+          setNaturalWidth(w);
+          setNaturalHeight(h);
+          if (shouldAutoCrop.current) {
+            shouldAutoCrop.current = false;
+            setCropRect(idealCropRect(w, h));
+            setIsCropMode(true);
+          }
         };
       } else if (mediaType === "video") {
         // Create an ephemeral video element to get dimensions
         const tempVideo = document.createElement("video");
         tempVideo.src = imageSrc;
         tempVideo.onloadedmetadata = () => {
-          setAspectRatio(tempVideo.videoWidth / tempVideo.videoHeight || 1);
+          const w = tempVideo.videoWidth;
+          const h = tempVideo.videoHeight;
+          setNaturalWidth(w);
+          setNaturalHeight(h);
+          if (shouldAutoCrop.current) {
+            shouldAutoCrop.current = false;
+            setCropRect(idealCropRect(w, h));
+            setIsCropMode(true);
+          }
           tempVideo.remove();
         };
       }
     }
   }, [imageSrc, mediaType]);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!dragState.current.active) return;
+      const container = canvasRef.current;
+      if (!container) return;
+      const dx = ((e.clientX - dragState.current.startX) / container.offsetWidth) * 100;
+      const dy = ((e.clientY - dragState.current.startY) / container.offsetHeight) * 100;
+      const newX = Math.max(5, Math.min(95, dragState.current.initX + dx));
+      const newY = Math.max(5, Math.min(95, dragState.current.initY + dy));
+      if (textRef.current) {
+        textRef.current.style.left = `${newX}%`;
+        textRef.current.style.top = `${newY}%`;
+      }
+    };
+    const handleMouseUp = () => {
+      if (dragState.current.active && textRef.current) {
+        const l = parseFloat(textRef.current.style.left);
+        const t = parseFloat(textRef.current.style.top);
+        if (!isNaN(l) && !isNaN(t)) {
+          setTextPos({ x: l, y: t });
+          pushToHistory({ textPos: { x: l, y: t } });
+        }
+        dragState.current.active = false;
+      }
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -118,30 +389,67 @@ export default function Canvas() {
       const sizeInKb = (file.size / 1024).toFixed(1);
       const sizeString = `${sizeInKb} KB`;
       
+      shouldAutoCrop.current = false;
+      
       const reader = new FileReader();
       reader.onload = (event) => {
         if (event.target?.result) {
-          setImageSrc(event.target.result as string);
+          const newSrc = event.target.result as string;
+          const newId = `track-${Date.now()}`;
+          
+          const newTrack: MediaTrack = {
+            id: newId,
+            imageSrc: newSrc,
+            mediaType: type,
+            mediaName: file.name,
+            mediaSize: sizeString,
+            naturalWidth: 0,
+            naturalHeight: 0,
+            cropRect: null,
+            isCropMode: false,
+            text: "",
+            textPos: { x: 50, y: 50 },
+          };
+          
+          setTracks((prev) => [...prev, newTrack]);
+          setActiveTrackId(newId);
+
+          setImageSrc(newSrc);
           setMediaType(type);
           setMediaName(file.name);
           setMediaSize(sizeString);
           setIsPlaying(false); // Reset playback
-          setZoom(1); // Reset zoom scale
-          setObjectFit("cover"); // Reset fit mode to cover by default
+          setViewMode("fit"); // Reset view mode to fit by default
+          setCropRect(null);
+          setIsCropMode(false);
+          setText("");
+          setTextPos({ x: 50, y: 50 });
+          setNaturalWidth(0);
+          setNaturalHeight(0);
+
+          pushToHistory({
+            imageSrc: newSrc,
+            mediaType: type,
+            mediaName: file.name,
+            mediaSize: sizeString,
+            cropRect: null,
+            isCropMode: false,
+            text: "",
+            textPos: { x: 50, y: 50 },
+          });
         }
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const thumbImages = imageSrc ? [imageSrc] : [];
-
   const handleCropToggle = () => {
     if (isCropMode) {
       setIsCropMode(false);
       setCropRect(null);
+      pushToHistory({ cropRect: null });
     } else {
-      setCropRect(initialCropRect({ width: 1080, height: 1080 }));
+      setCropRect(idealCropRect(naturalWidth, naturalHeight));
       setIsCropMode(true);
     }
   };
@@ -213,8 +521,25 @@ export default function Canvas() {
               }`}
             >
               <Crop size={16} className="text-primary" />
-              <span>✂️ Crop</span>
+              <span>Crop</span>
             </motion.button>
+
+            {isCropMode && (
+              <motion.button
+                initial={{ scale: 0.8, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                transition={{ type: "spring", stiffness: 450, damping: 18 }}
+                onClick={() => {
+                  setIsCropMode(false);
+                  pushToHistory({ cropRect });
+                }}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1.5 px-4 py-2 rounded-full font-sans text-[10px] font-bold uppercase tracking-wider shadow-md transition-colors"
+              >
+                <span>Done</span>
+              </motion.button>
+            )}
 
             {/* Add/Edit Text Popover */}
             <div className="relative">
@@ -228,7 +553,7 @@ export default function Canvas() {
                 }`}
               >
                 <Type size={16} className="text-secondary" />
-                <span>📝 Text</span>
+                <span>Text</span>
               </motion.button>
 
               <AnimatePresence>
@@ -250,17 +575,38 @@ export default function Canvas() {
                         type="text" 
                         value={text}
                         onChange={(e) => setText(e.target.value)}
+                        onBlur={() => pushToHistory({ text })}
                         placeholder="Type meme text here..."
                         className="w-full bg-surface-container border border-outline-variant rounded-xl px-3 py-2 text-xs font-sans text-on-surface focus:outline-none focus:ring-1 focus:ring-primary"
                       />
                     </div>
                     
-                    <button
-                      onClick={() => setText("")}
-                      className="w-full text-center py-1.5 text-[10px] font-sans text-error hover:bg-error-container/10 rounded-lg transition-colors uppercase tracking-wider font-semibold"
-                    >
-                      Clear Text Overlay
-                    </button>
+                    <div className="flex gap-2">
+                      <motion.button
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                        transition={{ type: "spring", stiffness: 400, damping: 20 }}
+                        onClick={() => {
+                          setText("");
+                          pushToHistory({ text: "" });
+                        }}
+                        className="flex-1 text-center py-1.5 text-[10px] font-sans text-error hover:bg-error-container/10 rounded-lg transition-colors uppercase tracking-wider font-semibold border border-outline-variant"
+                      >
+                        Clear Text
+                      </motion.button>
+                      <motion.button
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                        transition={{ type: "spring", stiffness: 400, damping: 20 }}
+                        onClick={() => {
+                          setTextPos({ x: 50, y: 50 });
+                          pushToHistory({ textPos: { x: 50, y: 50 } });
+                        }}
+                        className="flex-1 text-center py-1.5 text-[10px] font-sans text-primary hover:bg-primary-container/10 rounded-lg transition-colors uppercase tracking-wider font-semibold border border-outline-variant"
+                      >
+                        Reset Pos
+                      </motion.button>
+                    </div>
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -282,7 +628,7 @@ export default function Canvas() {
                 ) : (
                   <Zap size={16} className="text-secondary" />
                 )}
-                <span>⚡ Optimize</span>
+                <span>Optimize</span>
               </motion.button>
 
               <AnimatePresence>
@@ -374,75 +720,170 @@ export default function Canvas() {
         </div>
 
         {/* Center Viewport Canvas */}
-        <div className="w-full max-w-[720px] aspect-[16/9.5] max-h-[48vh] px-margin-sm md:px-page-padding flex items-center justify-center">
-          <div className="w-full h-full bg-[#efeeea] rounded-3xl p-6 md:p-8 border border-outline-variant shadow-inner flex items-center justify-center relative group">
+        <div className="w-full max-w-[720px] max-h-[70vh] px-margin-sm md:px-page-padding flex items-center justify-center">
+          <div className={`w-full bg-[#efeeea] rounded-3xl p-6 md:p-8 border border-outline-variant shadow-inner flex items-center justify-center relative group ${
+            viewMode === "actual" ? "overflow-auto max-h-[60vh]" : ""
+          }`}>
             {/* Hairline grid lines (Decorative) */}
             <div className="absolute left-4 top-1/2 -translate-y-1/2 h-40 w-[1px] bg-outline-variant opacity-30"></div>
             <div className="absolute right-4 top-1/2 -translate-y-1/2 h-40 w-[1px] bg-outline-variant opacity-30"></div>
             <div className="absolute top-4 left-1/2 -translate-x-1/2 w-40 h-[1px] bg-outline-variant opacity-30"></div>
             
-            <div className="relative h-full aspect-square rounded-2xl border border-outline-variant/60 overflow-hidden flex items-center justify-center bg-white shadow-2xl">
+            <div 
+              ref={canvasRef} 
+              className={`relative rounded-2xl border border-outline-variant/60 overflow-hidden bg-white shadow-2xl flex items-center justify-center ${
+                viewMode === "fit" 
+                  ? "max-w-full max-h-[50vh]" 
+                  : "shrink-0"
+              }`}
+              style={{
+                aspectRatio: (isCropMode ? _aspectRatio : (cropRect ? (cropRect.width / cropRect.height) : _aspectRatio)) || 1,
+                width: viewMode === "actual" ? (isCropMode ? naturalWidth : (cropRect ? cropRect.width : naturalWidth)) : undefined,
+                height: viewMode === "actual" ? (isCropMode ? naturalHeight : (cropRect ? cropRect.height : naturalHeight)) : undefined,
+              }}
+            >
               {/* Checkerboard Pattern */}
               <div className="absolute inset-0 opacity-[0.07] pointer-events-none checkerboard-bg"></div>
 
               {isCropMode && cropRect && (
                 <CropOverlay
-                  bounds={{ width: 1080, height: 1080 }}
+                  bounds={{ width: naturalWidth, height: naturalHeight }}
                   rect={cropRect}
                   onChange={setCropRect}
-                  onCommit={(r) => setCropRect(r)}
+                  onCommit={(r) => {
+                    setCropRect(r);
+                    pushToHistory({ cropRect: r });
+                  }}
                 />
               )}
 
-              {/* Pug MEME container */}
-              <div className="relative w-full h-full z-10 flex items-center justify-center">
-                {mediaType === "video" ? (
-                  <video 
-                    ref={videoRef}
-                    src={imageSrc}
-                    loop
-                    muted
-                    playsInline
-                    className="w-full h-full select-none cursor-pointer"
-                    style={{ objectFit, transform: `scale(${zoom})` }}
-                  />
-                ) : (
-                  <motion.img 
-                    ref={imageRef}
-                    animate={{ 
-                      scale: isPlaying ? [zoom, zoom * 1.02, zoom] : zoom,
-                      rotate: isPlaying ? [0, 0.5, -0.5, 0] : 0
+              {/* Floating Ideal Size Badge with Done Button */}
+              {isCropMode && (
+                <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-white border border-outline-variant shadow-2xl rounded-full px-3 py-1.5 flex items-center gap-2.5 z-40 animate-bounce">
+                  <span className="bg-primary/10 text-primary text-[10px] font-sans font-bold uppercase tracking-wider px-2 py-0.5 rounded-full">
+                    Crop to: 512 × 512 px
+                  </span>
+                  <button
+                    onClick={() => {
+                      setIsCropMode(false);
+                      pushToHistory({ cropRect });
                     }}
-                    transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
-                    alt="Meme Pug sticker"
-                    className="w-full h-full select-none cursor-pointer"
-                    style={{ objectFit }}
-                    src={imageSrc}
-                  />
-                )}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-sans font-bold uppercase tracking-wider px-3 py-1 rounded-full shadow-sm transition-colors font-semibold"
+                  >
+                    Done
+                  </button>
+                </div>
+              )}
+
+              {/* Pug MEME container */}
+              <div className="relative w-full h-full z-10 flex items-center justify-center overflow-hidden">
+                <div
+                  className="relative w-full h-full"
+                  style={
+                    !isCropMode && cropRect
+                      ? {
+                          width: "100%",
+                          height: "100%",
+                        }
+                      : undefined
+                  }
+                >
+                  {mediaType === "video" ? (
+                    <video 
+                      ref={videoRef}
+                      src={imageSrc}
+                      loop
+                      muted
+                      playsInline
+                      className="block select-none cursor-pointer"
+                      style={
+                        !isCropMode && cropRect
+                          ? {
+                              width: `${(naturalWidth / cropRect.width) * 100}%`,
+                              height: `${(naturalHeight / cropRect.height) * 100}%`,
+                              marginLeft: `${(-cropRect.x / cropRect.width) * 100}%`,
+                              marginTop: `${(-cropRect.y / cropRect.height) * 100}%`,
+                              maxWidth: "none",
+                              maxHeight: "none",
+                            }
+                          : {
+                              width: "100%",
+                              height: "100%",
+                              objectFit: "contain",
+                            }
+                      }
+                    />
+                  ) : (
+                    <motion.img 
+                      ref={imageRef}
+                      animate={{ 
+                        scale: isPlaying ? [1, 1.02, 1] : 1,
+                        rotate: isPlaying ? [0, 0.5, -0.5, 0] : 0
+                      }}
+                      transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
+                      alt="Meme Pug sticker"
+                      className="block select-none cursor-pointer"
+                      style={
+                        !isCropMode && cropRect
+                          ? {
+                              width: `${(naturalWidth / cropRect.width) * 100}%`,
+                              height: `${(naturalHeight / cropRect.height) * 100}%`,
+                              marginLeft: `${(-cropRect.x / cropRect.width) * 100}%`,
+                              marginTop: `${(-cropRect.y / cropRect.height) * 100}%`,
+                              maxWidth: "none",
+                              maxHeight: "none",
+                            }
+                          : {
+                              width: "100%",
+                              height: "100%",
+                              objectFit: "contain",
+                            }
+                      }
+                      src={imageSrc}
+                    />
+                  )}
+                </div>
                 
                 {/* Outlined Impact Text Overlay */}
                 {text && (
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <h2 
-                      className="text-white text-[32px] sm:text-[42px] md:text-[48px] leading-tight text-center drop-shadow-[0_4px_12px_rgba(0,0,0,0.8)] select-none uppercase font-extrabold tracking-wider"
-                      style={{
-                        fontFamily: "Impact, Arial Black, sans-serif",
-                        WebkitTextStroke: "2px #181715"
-                      }}
-                    >
-                      {text}
-                    </h2>
-                  </div>
-                )}
+                  <div
+                    ref={textRef}
+                    className="absolute z-20 cursor-grab active:cursor-grabbing select-none"
+                    style={{
+                      left: `${textPos.x}%`,
+                      top: `${textPos.y}%`,
+                      transform: "translate(-50%, -50%)",
+                    }}
+                    onMouseDown={(e) => {
+                      dragState.current = { 
+                        active: true, 
+                        startX: e.clientX, 
+                        startY: e.clientY, 
+                        initX: textPos.x, 
+                        initY: textPos.y 
+                      };
+                      e.preventDefault();
+                    }}
+                  >
+                      <h2 
+                        className="text-white text-[32px] sm:text-[42px] md:text-[48px] leading-tight text-center drop-shadow-[0_4px_12px_rgba(0,0,0,0.8)] hover:drop-shadow-[0_0_20px_rgba(255,255,255,0.55)] select-none uppercase font-extrabold tracking-wider transition-all duration-300"
+                        style={{
+                          fontFamily: "Impact, Arial Black, sans-serif",
+                          WebkitTextStroke: "2px #181715"
+                        }}
+                      >
+                        {text}
+                      </h2>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
         {/* Footer Track Bar */}
         <div className="absolute w-full px-page-padding flex justify-center bottom-8">
-          <div className="bg-white border border-outline-variant p-2 rounded-2xl shadow-xl flex items-center gap-2 max-w-full overflow-hidden">
+          <div className="bg-white border border-outline-variant py-2 px-4 rounded-full shadow-xl flex items-center gap-3 max-w-full overflow-hidden">
             <input 
               type="file" 
               ref={fileInputRef} 
@@ -455,25 +896,48 @@ export default function Canvas() {
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               transition={{ type: "spring", stiffness: 350, damping: 20 }}
-              className="w-14 h-14 bg-surface-container hover:bg-surface-container-high text-on-surface rounded-xl flex items-center justify-center transition-colors shrink-0"
+              className="w-14 h-14 bg-surface-container hover:bg-surface-container-high text-on-surface rounded-full flex items-center justify-center transition-colors shrink-0"
             >
               <Plus size={20} />
             </motion.button>
 
             {/* Thumbnail Track List */}
             <div className="flex items-center gap-2 overflow-x-auto px-1 py-1 scrollbar-thin">
-              {thumbImages.map((img, idx) => (
-                <div key={idx} className="relative shrink-0 cursor-pointer">
-                  <motion.div 
-                    whileHover={{ scale: 1.05 }}
-                    transition={{ type: "spring", stiffness: 300, damping: 15 }}
-                    className={`w-14 h-14 rounded-xl overflow-hidden bg-surface-container ${idx === 0 ? "ring-2 ring-primary ring-offset-2" : "opacity-60 hover:opacity-100 transition-opacity"}`}
+              {tracks.map((track, idx) => {
+                const isActive = track.id === activeTrackId;
+                return (
+                  <div 
+                    key={track.id} 
+                    className="relative shrink-0 cursor-pointer group" 
+                    onClick={() => handleSelectTrack(track)}
                   >
-                    <img className="w-full h-full object-cover" src={img} alt={`Preview track ${idx}`} />
-                  </motion.div>
-                  {idx === 0 && <span className="absolute -top-1 -right-1 w-4 h-4 bg-primary text-[8px] flex items-center justify-center text-white rounded-full font-bold">1</span>}
-                </div>
-              ))}
+                    <motion.div 
+                      className={`w-14 h-14 rounded-full overflow-hidden bg-surface-container ${
+                        isActive ? "ring-2 ring-primary ring-offset-2" : "opacity-60 hover:opacity-100 transition-opacity"
+                      }`}
+                    >
+                      {track.mediaType === "video" ? (
+                        <video className="w-full h-full object-cover pointer-events-none" src={track.imageSrc} />
+                      ) : (
+                        <img className="w-full h-full object-cover pointer-events-none" src={track.imageSrc} alt={`Preview track ${idx}`} />
+                      )}
+                    </motion.div>
+                    {/* Close / Deletion Cross Button on Top Right */}
+                    {tracks.length > 1 && (
+                      <motion.button
+                        whileHover={{ scale: 1.2 }}
+                        whileTap={{ scale: 0.8 }}
+                        transition={{ type: "spring", stiffness: 400, damping: 15 }}
+                        onClick={(e) => handleDeleteTrack(e, track.id)}
+                        className="absolute -top-1 -right-1 w-4 h-4 bg-red-600 text-white rounded-full flex items-center justify-center shadow-md hover:bg-red-700 transition-colors z-20 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+                        title="Delete track"
+                      >
+                        <X size={10} strokeWidth={3} />
+                      </motion.button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
 
             <div className="h-10 w-[1px] bg-outline-variant mx-2"></div>
@@ -484,6 +948,9 @@ export default function Canvas() {
                 <div className="flex flex-col justify-center">
                   <span className="text-[9px] font-mono text-secondary uppercase tracking-widest font-bold">Current Clip</span>
                   <span className="text-sm font-mono text-on-surface font-extrabold leading-none mt-1">00:02.45s</span>
+                  {naturalWidth > 0 && (
+                    <span className="text-[9px] font-mono text-on-surface-variant mt-0.5">{naturalWidth} × {naturalHeight} px</span>
+                  )}
                 </div>
                 <motion.button 
                   whileHover={{ scale: 1.1 }}
@@ -503,7 +970,9 @@ export default function Canvas() {
                 </span>
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                  <span className="text-[10px] font-mono text-on-surface-variant font-semibold tracking-wide">{mediaSize}</span>
+                  <span className="text-[10px] font-mono text-on-surface-variant font-semibold tracking-wide">
+                    {mediaSize} {naturalWidth > 0 && `• ${naturalWidth} × ${naturalHeight} px`}
+                  </span>
                 </div>
               </div>
             )}
@@ -533,52 +1002,30 @@ export default function Canvas() {
                     <button onClick={() => setActiveTab("")} className="text-[10px] text-primary uppercase font-bold">Close</button>
                   </div>
                   
-                  {/* Fit Mode Selector */}
+                  {/* Display Scale Mode Toggle */}
                   <div className="flex flex-col gap-2">
-                    <span className="text-[10px] font-mono text-secondary uppercase tracking-widest font-bold">Fit Mode</span>
+                    <span className="text-[10px] font-mono text-secondary uppercase tracking-widest font-bold">Display Scale Mode</span>
                     <div className="grid grid-cols-2 gap-2 bg-surface-container rounded-xl p-1">
                       <button
-                        onClick={() => setObjectFit("contain")}
+                        onClick={() => setViewMode("fit")}
                         className={`py-1.5 text-xs font-sans rounded-lg font-bold transition-all ${
-                          objectFit === "contain" 
+                          viewMode === "fit" 
                             ? "bg-white text-primary shadow-sm" 
                             : "text-on-surface-variant hover:text-on-surface"
                         }`}
                       >
-                        Fit (Contain)
+                        Fit Viewport
                       </button>
                       <button
-                        onClick={() => setObjectFit("cover")}
+                        onClick={() => setViewMode("actual")}
                         className={`py-1.5 text-xs font-sans rounded-lg font-bold transition-all ${
-                          objectFit === "cover" 
+                          viewMode === "actual" 
                             ? "bg-white text-primary shadow-sm" 
                             : "text-on-surface-variant hover:text-on-surface"
                         }`}
                       >
-                        Fill (Cover)
+                        Actual Size (1:1)
                       </button>
-                    </div>
-                  </div>
-
-                  {/* Zoom / Scale Slider */}
-                  <div className="flex flex-col gap-2">
-                    <div className="flex justify-between items-center">
-                      <span className="text-[10px] font-mono text-secondary uppercase tracking-widest font-bold">Zoom Scale</span>
-                      <span className="text-[10px] font-mono text-on-surface font-bold">{Math.round(zoom * 100)}%</span>
-                    </div>
-                    <input 
-                      type="range" 
-                      min="0.5" 
-                      max="3" 
-                      step="0.05" 
-                      value={zoom}
-                      onChange={(e) => setZoom(parseFloat(e.target.value))}
-                      className="w-full accent-primary h-1.5 bg-surface-container rounded-lg cursor-pointer"
-                    />
-                    <div className="flex justify-between text-[9px] text-on-surface-variant font-mono">
-                      <span>0.5x</span>
-                      <button onClick={() => setZoom(1)} className="hover:text-primary">Reset (1.0x)</button>
-                      <span>3.0x</span>
                     </div>
                   </div>
                 </>
@@ -650,6 +1097,36 @@ export default function Canvas() {
         </AnimatePresence>
 
         <div className="p-2 rounded-2xl flex flex-col gap-2 shadow-2xl border border-outline-variant bg-white">
+          {/* Undo / Redo Buttons */}
+          <div className="flex flex-col gap-2 pb-2 border-b border-outline-variant/60">
+            <motion.button
+              whileHover={{ scale: 1.08 }}
+              whileTap={{ scale: 0.92 }}
+              transition={{ type: "spring", stiffness: 350, damping: 18 }}
+              onClick={handleUndo}
+              disabled={historyIndex <= 0}
+              className={`w-12 h-12 flex items-center justify-center rounded-xl transition-all ${
+                historyIndex > 0 ? "text-on-surface hover:bg-surface-container" : "text-on-surface/30 cursor-not-allowed"
+              }`}
+              title="Undo"
+            >
+              <Undo2 size={18} />
+            </motion.button>
+            <motion.button
+              whileHover={{ scale: 1.08 }}
+              whileTap={{ scale: 0.92 }}
+              transition={{ type: "spring", stiffness: 350, damping: 18 }}
+              onClick={handleRedo}
+              disabled={historyIndex >= history.length - 1}
+              className={`w-12 h-12 flex items-center justify-center rounded-xl transition-all ${
+                historyIndex < history.length - 1 ? "text-on-surface hover:bg-surface-container" : "text-on-surface/30 cursor-not-allowed"
+              }`}
+              title="Redo"
+            >
+              <Redo2 size={18} />
+            </motion.button>
+          </div>
+
           {consoleTabs.map((tab) => {
             const isActive = activeTab === tab.id;
             return (

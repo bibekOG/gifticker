@@ -43,3 +43,14 @@ export function initialCropRect(bounds: { width: number; height: number }): Crop
     height: size,
   };
 }
+
+export function idealCropRect(imageW: number, imageH: number, targetSize = 512): CropRect {
+  const w = Math.min(targetSize, imageW);
+  const h = Math.min(targetSize, imageH);
+  return {
+    x: (imageW - w) / 2,
+    y: (imageH - h) / 2,
+    width: w,
+    height: h,
+  };
+}

@@ -113,11 +113,37 @@ export default function Home() {
           {/* Left Hero */}
           <div className="w-full md:w-1/2 flex flex-col justify-center">
             <div className="relative w-full aspect-video mb-12 hidden md:block overflow-hidden rounded-2xl border border-outline-variant bg-[#efe9de] p-4">
+              {/* Concentric Pulsing Radar Rings */}
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden">
+                {[1, 2, 3].map((index) => (
+                  <motion.div
+                    key={index}
+                    initial={{ scale: 0.8, opacity: 0.15 }}
+                    animate={{ scale: [0.8, 1.8], opacity: [0.15, 0] }}
+                    transition={{
+                      repeat: Infinity,
+                      duration: 4,
+                      delay: index * 1.3,
+                      ease: "easeOut",
+                    }}
+                    className="absolute w-64 h-64 border border-primary/20 rounded-full"
+                  />
+                ))}
+              </div>
+
+              {/* Dynamic Scanning Line */}
+              <motion.div 
+                animate={{ y: ["0%", "100%", "0%"] }}
+                transition={{ repeat: Infinity, duration: 4, ease: "linear" }}
+                className="absolute left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-primary/45 to-transparent z-20 pointer-events-none"
+                style={{ top: 0 }}
+              />
+
               <div className="absolute inset-0 flex items-center justify-center">
                 <motion.div 
                   animate={{ y: [0, -15, 0], rotate: [0, 1.5, 0] }}
                   transition={{ repeat: Infinity, duration: 6, ease: "easeInOut", type: "spring" }}
-                  className="w-48 h-48 border border-outline-variant bg-[#faf9f5] rounded-xl flex items-center justify-center overflow-hidden shadow-lg"
+                  className="w-48 h-48 border border-outline-variant bg-[#faf9f5] rounded-xl flex items-center justify-center overflow-hidden shadow-lg z-10"
                 >
                   <img 
                     alt="Sticker preview" 
@@ -126,7 +152,7 @@ export default function Home() {
                   />
                 </motion.div>
               </div>
-              <div className="absolute top-4 left-4 border border-primary px-3 py-1 bg-surface rounded">
+              <div className="absolute top-4 left-4 border border-primary px-3 py-1 bg-surface rounded z-30">
                 <span className="font-sans text-label-caps text-primary tracking-wider uppercase font-semibold">ISOLATION ACTIVE</span>
               </div>
             </div>
